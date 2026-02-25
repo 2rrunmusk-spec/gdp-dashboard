@@ -49,7 +49,7 @@ def post_to_threads(text, access_token):
         return False, f"컨테이너 생성 오류: {create_res.text}"
     
     creation_id = create_res.json().get("id")
-    time.sleep(3) # 💡 메타 서버가 준비할 수 있게 3초 대기 (이게 있어야 성공함!)
+    time.sleep(3) # 💡 메타 서버가 준비할 수 있게 3초 대기
     
     publish_url = "https://graph.threads.net/v1.0/me/threads_publish"
     publish_res = requests.post(publish_url, data={"creation_id": creation_id, "access_token": access_token})
@@ -64,45 +64,49 @@ def get_long_lived_token(short_token, client_secret):
     return (True, res.json().get("access_token")) if res.status_code == 200 else (False, res.text)
 
 # ---------------------------------------------
-# ⏰ [핵심 개선] 페이지 클릭/새로고침 시 무조건 예약 확인
+# ⏰ [핵심 패치] 중복 발송을 막는 '자물쇠(Lock)' 기능 추가
 # ---------------------------------------------
 def process_due_schedules():
     schedules = load_schedules()
-    if not schedules:
-        return
-        
+    if not schedules: return
+
     now_kst = datetime.utcnow() + timedelta(hours=9)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M")
-    pending = []
-    changed = False
-    
-    for item in schedules:
-        # 이미 실패한 건은 다시 쏘지 않고 놔둠
-        if item.get("status") == "failed":
-            pending.append(item)
-            continue
-            
-        # 예약 시간이 현재 시간보다 과거이거나 같으면 무조건 업로드 슛!
-        if item["post_time"] <= now_str:
-            success, msg = post_to_threads(item["text"], item["token"])
-            if success:
-                changed = True  # 성공 시 목록에서 삭제
-            else:
-                item["status"] = "failed"
-                item["error_msg"] = msg
-                pending.append(item)
-                changed = True
-        else:
-            pending.append(item)
-            
-    if changed:
-        save_schedules(pending)
 
-# 스크립트가 실행될 때마다 무조건 1번씩 검사합니다. (cron-job.org가 접속해도 검사함)
+    # 1. 시간이 지났으면서 아직 자물쇠가 안 걸린 애들만 모음
+    due_items = [item for item in schedules if item["post_time"] <= now_str and item.get("status") not in ["failed", "processing"]]
+
+    if not due_items: return
+
+    # 2. 🌟 [핵심 방어막] 찾자마자 '처리 중(processing)' 도장 쾅! (자물쇠 걸기)
+    # 이렇게 해야 클릭을 연타해도 메타 서버에 중복으로 안 날아갑니다.
+    for item in due_items:
+        item["status"] = "processing"
+    save_schedules(schedules)
+
+    # 3. 자물쇠를 걸었으니 안심하고 하나씩 스레드에 업로드 진행
+    for item in due_items:
+        success, msg = post_to_threads(item["text"], item["token"])
+
+        # 4. 결과 저장 (성공하면 목록에서 지우고, 실패하면 에러 기록)
+        current_schedules = load_schedules()
+        updated_schedules = []
+        for s in current_schedules:
+            if s["post_time"] == item["post_time"] and s["text"] == item["text"]:
+                if not success:
+                    s["status"] = "failed"
+                    s["error_msg"] = msg
+                    updated_schedules.append(s)
+                # 성공 시에는 다시 리스트에 안 넣으므로 자연스레 깔끔하게 삭제됨
+            else:
+                updated_schedules.append(s)
+        save_schedules(updated_schedules)
+
+# 스크립트 실행 시 딱 한 번만 검사!
 process_due_schedules()
 
 # ---------------------------------------------
-# 🔒 로그인 화면
+# 🔒 로그인 및 메인 화면 구성
 # ---------------------------------------------
 if "logged_in_user" not in st.session_state:
     st.session_state["logged_in_user"] = None
@@ -137,9 +141,6 @@ if st.session_state["logged_in_user"] is None:
                 st.success(f"🎉 '{new_id}' 생성 완료! 로그인 탭에서 로그인해주세요.")
     st.stop()
 
-# ---------------------------------------------
-# 🚀 메인 대시보드 & 설정 통합 화면
-# ---------------------------------------------
 current_user = st.session_state["logged_in_user"]
 user_config = users_data.get(current_user, {})
 
@@ -270,15 +271,11 @@ with tab_main:
                             st.rerun()
                         else: st.error(f"⚠️ 업로드 실패: {message}")
 
-        # ---------------------------------------------
-        # 📅 예약된 게시물 관리
-        # ---------------------------------------------
         st.divider()
         col_title, col_refresh = st.columns([3, 1])
         with col_title:
             st.subheader("📅 내 예약된 게시물 관리")
         with col_refresh:
-            # 사용자가 강제로 예약 상태를 새로고침(업로드 확인)할 수 있는 버튼 추가!
             if st.button("🔄 예약 상태 새로고침"):
                 st.rerun()
         
