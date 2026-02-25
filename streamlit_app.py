@@ -3,7 +3,7 @@ import json
 import os
 import requests
 import google.generativeai as genai
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import time
 
@@ -56,10 +56,13 @@ def job_checker():
     while True:
         schedules = load_schedules()
         if schedules:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            # [수정] 서버 시간(UTC)에 9시간을 더해 '한국 시간(KST)'으로 강제 보정!
+            now_kst = datetime.utcnow() + timedelta(hours=9)
+            now_str = now_kst.strftime("%Y-%m-%d %H:%M")
+            
             pending = []
             for item in schedules:
-                if item["post_time"] <= now:
+                if item["post_time"] <= now_str:
                     post_to_threads(item["text"], item["token"])
                 else:
                     pending.append(item)
@@ -67,10 +70,15 @@ def job_checker():
                 save_schedules(pending)
         time.sleep(30)
 
-if "scheduler_started" not in st.session_state:
-    t = threading.Thread(target=job_checker, daemon=True)
+# [수정] 새로고침할 때마다 로봇(스레드)이 복제되는 현상 방지
+def start_scheduler():
+    for t in threading.enumerate():
+        if t.name == "Thread_JobChecker":
+            return # 이미 로봇이 돌아가고 있으면 새로 만들지 않음
+    t = threading.Thread(target=job_checker, name="Thread_JobChecker", daemon=True)
     t.start()
-    st.session_state["scheduler_started"] = True
+
+start_scheduler()
 
 # ---------------------------------------------
 # 🔒 로그인 및 회원가입 화면
@@ -131,7 +139,6 @@ st.title("🤖 스레드 자동화 봇 대시보드")
 if not user_config.get("gemini_api_key") or not user_config.get("threads_token"):
     st.warning("⚠️ 현재 계정의 API 설정 정보가 없습니다. 왼쪽 [1_settings] 메뉴에서 내 설정을 완료해주세요.")
 else:
-    # 1단계: 텍스트 생성
     st.subheader("📝 1단계: 게시글 자동 작성")
     genai.configure(api_key=user_config["gemini_api_key"])
     model = genai.GenerativeModel('gemini-2.5-flash') 
@@ -158,7 +165,6 @@ else:
             except Exception as e:
                 st.error("⚠️ 텍스트 생성 오류! API 키를 확인해주세요.")
     
-    # 2단계: 업로드 및 스케줄러
     if "draft_text" in st.session_state:
         st.divider()
         st.subheader("🚀 2단계: 스레드 업로드")
@@ -171,7 +177,8 @@ else:
             with col1:
                 sched_date = st.date_input("예약 날짜")
             with col2:
-                sched_time = st.time_input("예약 시간")
+                # [수정] step=60 을 추가하여 1분 단위로 임의 시간 설정 가능!
+                sched_time = st.time_input("예약 시간", step=60)
                 
             sched_datetime_str = f"{sched_date} {sched_time.strftime('%H:%M')}"
             
@@ -213,11 +220,9 @@ else:
         st.info("현재 대기 중인 예약 게시물이 없습니다.")
     else:
         for idx, sched in enumerate(my_schedules):
-            # 펼쳐서 볼 수 있는 창 (Expander) 생성
             with st.expander(f"⏰ {sched['post_time']} 예약 건 (클릭해서 수정/삭제)"):
                 new_text = st.text_area("내용 수정:", value=sched['text'], height=100, key=f"text_{idx}")
                 
-                # 기존에 저장된 날짜와 시간을 분리해서 가져오기
                 try:
                     exist_dt = datetime.strptime(sched['post_time'], "%Y-%m-%d %H:%M")
                     exist_date = exist_dt.date()
@@ -230,11 +235,11 @@ else:
                 with col1:
                     new_date = st.date_input("날짜 변경", value=exist_date, key=f"date_{idx}")
                 with col2:
-                    new_time = st.time_input("시간 변경", value=exist_time, key=f"time_{idx}")
+                    # [수정] 수정 창에서도 1분 단위로 시간 설정 가능
+                    new_time = st.time_input("시간 변경", value=exist_time, key=f"time_{idx}", step=60)
                 
                 new_datetime_str = f"{new_date} {new_time.strftime('%H:%M')}"
                 
-                # 수정 및 삭제 버튼
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.button("💾 수정 내용 저장", key=f"edit_{idx}", type="primary"):
@@ -246,13 +251,12 @@ else:
                                 break
                         save_schedules(sorted(all_schedules, key=lambda x: x["post_time"]))
                         st.success("✅ 예약이 성공적으로 수정되었습니다!")
-                        time.sleep(1) # 메시지를 잠깐 보여주기 위해 1초 대기
+                        time.sleep(1)
                         st.rerun()
                         
                 with col_btn2:
                     if st.button("🗑️ 예약 취소 (삭제)", key=f"del_{idx}"):
                         all_schedules = load_schedules()
-                        # 현재 선택한 항목만 목록에서 제거
                         all_schedules = [s for s in all_schedules if not (s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"])]
                         save_schedules(all_schedules)
                         st.warning("🗑️ 예약이 삭제되었습니다.")
