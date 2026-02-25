@@ -131,7 +131,7 @@ st.title("🤖 스레드 자동화 봇 대시보드")
 if not user_config.get("gemini_api_key") or not user_config.get("threads_token"):
     st.warning("⚠️ 현재 계정의 API 설정 정보가 없습니다. 왼쪽 [1_settings] 메뉴에서 내 설정을 완료해주세요.")
 else:
-    # 1단계: 텍스트 생성 (숨겨진 프롬프트 적용)
+    # 1단계: 텍스트 생성
     st.subheader("📝 1단계: 게시글 자동 작성")
     genai.configure(api_key=user_config["gemini_api_key"])
     model = genai.GenerativeModel('gemini-2.5-flash') 
@@ -201,9 +201,11 @@ else:
                     else:
                         st.error(f"⚠️ 업로드 실패: {message}")
 
-    # --- 예약 목록 보기 ---
+    # ---------------------------------------------
+    # 📅 내 예약된 게시물 목록 (수정 및 삭제 기능 포함)
+    # ---------------------------------------------
     st.divider()
-    st.subheader("📅 내 예약된 게시물 목록")
+    st.subheader("📅 내 예약된 게시물 관리")
     
     my_schedules = [s for s in load_schedules() if s["user"] == current_user]
     
@@ -211,5 +213,48 @@ else:
         st.info("현재 대기 중인 예약 게시물이 없습니다.")
     else:
         for idx, sched in enumerate(my_schedules):
-            st.write(f"**{idx+1}. ⏰ {sched['post_time']}**")
-            st.caption(f"내용: {sched['text'][:50]}...")
+            # 펼쳐서 볼 수 있는 창 (Expander) 생성
+            with st.expander(f"⏰ {sched['post_time']} 예약 건 (클릭해서 수정/삭제)"):
+                new_text = st.text_area("내용 수정:", value=sched['text'], height=100, key=f"text_{idx}")
+                
+                # 기존에 저장된 날짜와 시간을 분리해서 가져오기
+                try:
+                    exist_dt = datetime.strptime(sched['post_time'], "%Y-%m-%d %H:%M")
+                    exist_date = exist_dt.date()
+                    exist_time = exist_dt.time()
+                except:
+                    exist_date = datetime.now().date()
+                    exist_time = datetime.now().time()
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    new_date = st.date_input("날짜 변경", value=exist_date, key=f"date_{idx}")
+                with col2:
+                    new_time = st.time_input("시간 변경", value=exist_time, key=f"time_{idx}")
+                
+                new_datetime_str = f"{new_date} {new_time.strftime('%H:%M')}"
+                
+                # 수정 및 삭제 버튼
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("💾 수정 내용 저장", key=f"edit_{idx}", type="primary"):
+                        all_schedules = load_schedules()
+                        for s in all_schedules:
+                            if s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"]:
+                                s["text"] = new_text
+                                s["post_time"] = new_datetime_str
+                                break
+                        save_schedules(sorted(all_schedules, key=lambda x: x["post_time"]))
+                        st.success("✅ 예약이 성공적으로 수정되었습니다!")
+                        time.sleep(1) # 메시지를 잠깐 보여주기 위해 1초 대기
+                        st.rerun()
+                        
+                with col_btn2:
+                    if st.button("🗑️ 예약 취소 (삭제)", key=f"del_{idx}"):
+                        all_schedules = load_schedules()
+                        # 현재 선택한 항목만 목록에서 제거
+                        all_schedules = [s for s in all_schedules if not (s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"])]
+                        save_schedules(all_schedules)
+                        st.warning("🗑️ 예약이 삭제되었습니다.")
+                        time.sleep(1)
+                        st.rerun()
