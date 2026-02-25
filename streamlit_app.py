@@ -11,7 +11,7 @@ SAVE_FILE = "secrets.json"
 SCHEDULE_FILE = "scheduled.json"
 
 # ---------------------------------------------
-# 💾 데이터 처리 및 자동 마이그레이션
+# 💾 데이터 처리
 # ---------------------------------------------
 def save_all_users(data):
     with open(SAVE_FILE, 'w', encoding='utf-8') as f:
@@ -22,7 +22,6 @@ def load_all_users():
         with open(SAVE_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             changed = False
-            # 구버전 데이터를 다중 계정 버전으로 자동 변환
             for uid, udata in data.items():
                 if "threads_accounts" not in udata:
                     udata["threads_accounts"] = {}
@@ -70,7 +69,7 @@ def get_long_lived_token(short_token, client_secret):
     return (True, res.json().get("access_token")) if res.status_code == 200 else (False, res.text)
 
 # ---------------------------------------------
-# ⏰ 백그라운드 스케줄러 (한국 시간 패치)
+# ⏰ 백그라운드 스케줄러 (에러 추적 기능 추가)
 # ---------------------------------------------
 def job_checker():
     while True:
@@ -79,12 +78,28 @@ def job_checker():
             now_kst = datetime.utcnow() + timedelta(hours=9)
             now_str = now_kst.strftime("%Y-%m-%d %H:%M")
             pending = []
+            changed = False
+            
             for item in schedules:
+                # 이미 실패한 건은 다시 시도하지 않음
+                if item.get("status") == "failed":
+                    pending.append(item)
+                    continue
+                
                 if item["post_time"] <= now_str:
-                    post_to_threads(item["text"], item["token"])
+                    success, msg = post_to_threads(item["text"], item["token"])
+                    if success:
+                        changed = True # 성공하면 목록에서 완전히 삭제됨
+                    else:
+                        # [핵심] 실패하면 삭제하지 않고 상태를 'failed'로 변경 후 에러 메시지 저장
+                        item["status"] = "failed"
+                        item["error_msg"] = msg
+                        pending.append(item)
+                        changed = True
                 else:
                     pending.append(item)
-            if len(schedules) != len(pending):
+            
+            if changed:
                 save_schedules(pending)
         time.sleep(30)
 
@@ -153,7 +168,6 @@ with st.sidebar:
 
 st.title("🤖 스레드 다중 계정 봇")
 
-# ✨ 탭으로 화면 분리 (대시보드 / 설정)
 tab_main, tab_settings = st.tabs(["🚀 자동 업로드 대시보드", "⚙️ 계정 및 API 설정"])
 
 # ==========================================
@@ -173,7 +187,6 @@ with tab_settings:
     st.header("2. 스레드 다중 계정 관리")
     accounts = user_config.get("threads_accounts", {})
     
-    # 기존 등록된 계정 목록 보여주기
     if accounts:
         st.write("📋 **현재 등록된 계정 목록**")
         for acc_name, acc_info in accounts.items():
@@ -200,7 +213,6 @@ with tab_settings:
     else:
         st.info("아직 등록된 스레드 계정이 없습니다. 아래에서 추가해주세요.")
 
-    # 새 계정 추가 폼
     with st.form("add_account_form"):
         st.subheader("➕ 새 스레드 계정 추가")
         new_acc_name = st.text_input("1. 계정 별명 (예: 맛집 리뷰용, 일상용)")
@@ -231,7 +243,6 @@ with tab_main:
     if not user_config.get("gemini_api_key") or not accounts:
         st.warning("⚠️ 옆의 [⚙️ 계정 및 API 설정] 탭으로 가서 Gemini 키와 스레드 계정을 먼저 등록해주세요.")
     else:
-        # ✨ 어떤 계정에 올릴지 선택하는 드롭다운
         selected_account = st.selectbox("📤 어느 계정에 업로드하시겠습니까?", list(accounts.keys()))
         selected_token = accounts[selected_account]["token"]
 
@@ -282,7 +293,7 @@ with tab_main:
                     schedules = load_schedules()
                     schedules.append({
                         "user": current_user,
-                        "account_name": selected_account, # 어떤 계정인지 저장
+                        "account_name": selected_account,
                         "text": final_text,
                         "token": selected_token,
                         "post_time": sched_datetime_str
@@ -308,7 +319,7 @@ with tab_main:
                             st.error(f"⚠️ 업로드 실패: {message}")
 
         # ---------------------------------------------
-        # 📅 예약된 게시물 관리
+        # 📅 예약된 게시물 관리 (실패 내역 표시 기능)
         # ---------------------------------------------
         st.divider()
         st.subheader("📅 내 예약된 게시물 관리")
@@ -319,10 +330,19 @@ with tab_main:
             st.info("현재 대기 중인 예약 게시물이 없습니다.")
         else:
             for idx, sched in enumerate(my_schedules):
-                # 표시용 계정 이름 (구버전 데이터 호환 처리)
                 disp_acc = sched.get('account_name', '기본 계정')
                 
-                with st.expander(f"⏰ {sched['post_time']} | 📌 [{disp_acc}] | (클릭해서 수정/삭제)"):
+                # 실패 여부에 따라 제목 다르게 표시
+                if sched.get("status") == "failed":
+                    title = f"❌ [업로드 실패] {sched['post_time']} | 📌 [{disp_acc}]"
+                else:
+                    title = f"⏰ {sched['post_time']} | 📌 [{disp_acc}] | (클릭해서 수정/삭제)"
+                
+                with st.expander(title):
+                    if sched.get("status") == "failed":
+                        st.error(f"⚠️ 에러 원인: {sched.get('error_msg')}")
+                        st.info("💡 시간을 미래로 다시 변경하고 [수정 내용 저장]을 누르면 재시도합니다.")
+
                     new_text = st.text_area("내용 수정:", value=sched['text'], height=100, key=f"text_{idx}")
                     
                     try:
@@ -349,9 +369,12 @@ with tab_main:
                                 if s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"]:
                                     s["text"] = new_text
                                     s["post_time"] = new_datetime_str
+                                    # 다시 시도하도록 에러 기록 지우기
+                                    s.pop("status", None) 
+                                    s.pop("error_msg", None)
                                     break
                             save_schedules(sorted(all_schedules, key=lambda x: x["post_time"]))
-                            st.success("✅ 예약이 성공적으로 수정되었습니다!")
+                            st.success("✅ 예약이 수정되었습니다! 다시 업로드 대기 상태로 변경됩니다.")
                             time.sleep(1)
                             st.rerun()
                             
