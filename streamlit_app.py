@@ -334,4 +334,4 @@ with tab_main:
                             save_schedules(all_schedules)
                             st.warning("🗑️ 예약이 삭제되었습니다.")
                             time.sleep(1)
-                            st.rerun()2
+                            st.rerun()
