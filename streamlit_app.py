@@ -49,6 +49,7 @@ def save_schedules(data):
     with open(SCHEDULE_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
 
+# 💡 [핵심 패치] 스레드 업로드 함수 (3초 대기 추가)
 def post_to_threads(text, access_token):
     create_url = "https://graph.threads.net/v1.0/me/threads"
     create_res = requests.post(create_url, data={"media_type": "TEXT", "text": text, "access_token": access_token})
@@ -56,6 +57,10 @@ def post_to_threads(text, access_token):
         return False, f"컨테이너 생성 오류: {create_res.text}"
     
     creation_id = create_res.json().get("id")
+    
+    # 메타 서버가 상자를 준비할 수 있도록 3초간 뜸을 들입니다!
+    time.sleep(3)
+    
     publish_url = "https://graph.threads.net/v1.0/me/threads_publish"
     publish_res = requests.post(publish_url, data={"creation_id": creation_id, "access_token": access_token})
     if publish_res.status_code != 200:
@@ -69,7 +74,7 @@ def get_long_lived_token(short_token, client_secret):
     return (True, res.json().get("access_token")) if res.status_code == 200 else (False, res.text)
 
 # ---------------------------------------------
-# ⏰ 백그라운드 스케줄러 (에러 추적 기능 추가)
+# ⏰ 백그라운드 스케줄러 (에러 추적 기능 포함)
 # ---------------------------------------------
 def job_checker():
     while True:
@@ -81,7 +86,6 @@ def job_checker():
             changed = False
             
             for item in schedules:
-                # 이미 실패한 건은 다시 시도하지 않음
                 if item.get("status") == "failed":
                     pending.append(item)
                     continue
@@ -89,9 +93,8 @@ def job_checker():
                 if item["post_time"] <= now_str:
                     success, msg = post_to_threads(item["text"], item["token"])
                     if success:
-                        changed = True # 성공하면 목록에서 완전히 삭제됨
+                        changed = True 
                     else:
-                        # [핵심] 실패하면 삭제하지 않고 상태를 'failed'로 변경 후 에러 메시지 저장
                         item["status"] = "failed"
                         item["error_msg"] = msg
                         pending.append(item)
@@ -319,7 +322,7 @@ with tab_main:
                             st.error(f"⚠️ 업로드 실패: {message}")
 
         # ---------------------------------------------
-        # 📅 예약된 게시물 관리 (실패 내역 표시 기능)
+        # 📅 예약된 게시물 관리
         # ---------------------------------------------
         st.divider()
         st.subheader("📅 내 예약된 게시물 관리")
@@ -332,7 +335,6 @@ with tab_main:
             for idx, sched in enumerate(my_schedules):
                 disp_acc = sched.get('account_name', '기본 계정')
                 
-                # 실패 여부에 따라 제목 다르게 표시
                 if sched.get("status") == "failed":
                     title = f"❌ [업로드 실패] {sched['post_time']} | 📌 [{disp_acc}]"
                 else:
@@ -369,7 +371,6 @@ with tab_main:
                                 if s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"]:
                                     s["text"] = new_text
                                     s["post_time"] = new_datetime_str
-                                    # 다시 시도하도록 에러 기록 지우기
                                     s.pop("status", None) 
                                     s.pop("error_msg", None)
                                     break
