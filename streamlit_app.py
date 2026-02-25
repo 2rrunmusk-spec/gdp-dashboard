@@ -10,7 +10,7 @@ SAVE_FILE = "secrets.json"
 SCHEDULE_FILE = "scheduled.json"
 
 # ---------------------------------------------
-# 💾 데이터 처리
+# 💾 데이터 처리 및 업로드 함수
 # ---------------------------------------------
 def save_all_users(data):
     with open(SAVE_FILE, 'w', encoding='utf-8') as f:
@@ -38,7 +38,6 @@ def load_schedules():
         try:
             with open(SCHEDULE_FILE, 'r', encoding='utf-8') as f: 
                 schedules = json.load(f)
-                # 혹시 예전에 'processing' 상태로 고장난 자물쇠가 있다면 강제로 해제!
                 for s in schedules:
                     if s.get("status") == "processing":
                         s.pop("status", None)
@@ -57,7 +56,7 @@ def post_to_threads(text, access_token):
         return False, f"컨테이너 생성 오류: {create_res.text}"
     
     creation_id = create_res.json().get("id")
-    time.sleep(3) # 메타 서버 준비 대기
+    time.sleep(3) 
     
     publish_url = "https://graph.threads.net/v1.0/me/threads_publish"
     publish_res = requests.post(publish_url, data={"creation_id": creation_id, "access_token": access_token})
@@ -72,7 +71,7 @@ def get_long_lived_token(short_token, client_secret):
     return (True, res.json().get("access_token")) if res.status_code == 200 else (False, res.text)
 
 # ---------------------------------------------
-# ⏰ [핵심 개선] 페이지 접속 시 자동 예약 처리 (자물쇠 제거)
+# ⏰ 페이지 접속 시 자동 예약 처리
 # ---------------------------------------------
 def process_due_schedules():
     schedules = load_schedules()
@@ -81,14 +80,12 @@ def process_due_schedules():
     now_kst = datetime.utcnow() + timedelta(hours=9)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M")
 
-    # '실패'가 아닌 것 중에서 시간이 지난 것들을 싹 모음
     due_items = [item for item in schedules if item["post_time"] <= now_str and item.get("status") != "failed"]
     if not due_items: return
 
     for item in due_items:
         success, msg = post_to_threads(item["text"], item["token"])
 
-        # 업로드 시도 후 목록 갱신
         current_schedules = load_schedules()
         updated_schedules = []
         for s in current_schedules:
@@ -97,12 +94,10 @@ def process_due_schedules():
                     s["status"] = "failed"
                     s["error_msg"] = msg
                     updated_schedules.append(s)
-                # 성공 시에는 추가하지 않으므로 자연스럽게 목록에서 삭제!
             else:
                 updated_schedules.append(s)
         save_schedules(updated_schedules)
 
-# 스크립트가 실행(새로고침)될 때마다 무조건 예약 검사
 process_due_schedules()
 
 # ---------------------------------------------
@@ -144,16 +139,12 @@ if st.session_state["logged_in_user"] is None:
 current_user = st.session_state["logged_in_user"]
 user_config = users_data.get(current_user, {})
 
-# 현재 봇 시간 계산
 bot_now = datetime.utcnow() + timedelta(hours=9)
 bot_now_str = bot_now.strftime("%Y-%m-%d %H:%M")
 
 with st.sidebar:
     st.success(f"👤 **{current_user}**님 접속 중")
-    
-    # ✨ 봇 시계 표시! (이 시간 기준으로 예약이 돌아갑니다)
     st.info(f"⏰ 봇 기준 현재 시간:\n\n**{bot_now_str}**")
-    
     if st.button("🚪 로그아웃"):
         st.session_state["logged_in_user"] = None
         st.rerun()
@@ -163,7 +154,7 @@ st.title("🤖 스레드 다중 계정 봇")
 tab_main, tab_settings = st.tabs(["🚀 자동 업로드 대시보드", "⚙️ 계정 및 API 설정"])
 
 # ==========================================
-# ⚙️ 탭 2: 환경 설정
+# ⚙️ 탭 2: 환경 설정 
 # ==========================================
 with tab_settings:
     st.header("1. Gemini API 설정")
@@ -219,119 +210,156 @@ with tab_settings:
                 st.rerun()
 
 # ==========================================
-# 🚀 탭 1: 대시보드 (업로드 및 예약)
+# 🚀 탭 1: 대시보드 (화면 분할: 좌측 기능 / 우측 가이드)
 # ==========================================
 with tab_main:
     accounts = user_config.get("threads_accounts", {})
     if not user_config.get("gemini_api_key") or not accounts:
         st.warning("⚠️ 옆의 [⚙️ 계정 및 API 설정] 탭으로 가서 Gemini 키와 스레드 계정을 먼저 등록해주세요.")
     else:
-        selected_account = st.selectbox("📤 어느 계정에 업로드하시겠습니까?", list(accounts.keys()))
-        selected_token = accounts[selected_account]["token"]
-
-        st.divider()
-        st.subheader("📝 1단계: 게시글 자동 작성")
-        genai.configure(api_key=user_config["gemini_api_key"])
-        model = genai.GenerativeModel('gemini-2.5-flash') 
-        topic = st.text_input("💡 오늘 스레드에 올릴 주제를 짧게 적어주세요:", value="오늘 점심 메뉴 추천 좀")
-
-        if st.button("✨ 게시글 초안 생성하기", type="primary"):
-            with st.spinner("Gemini가 트렌디한 글을 작성하고 있습니다..."):
-                try:
-                    final_prompt = f"당신은 스레드(Threads)에서 활동하는 센스 있는 인플루언서입니다. 다음 [주제]를 바탕으로 스레드에 업로드할 게시글을 작성해주세요.\n[주제]: {topic}\n[절대 지켜야 할 조건]\n1. 인사말이나 부연 설명은 절대 하지 말고 '딱 게시글 본문만' 출력할 것.\n2. 무조건 3줄 이내로 아주 짧고 간결하게 작성할 것.\n3. 친근하고 자연스러운 인터넷 '반말(최신 밈 활용)'로 작성할 것.\n4. 해시태그는 마지막 줄에 1~2개만 넣을 것."
-                    response = model.generate_content(final_prompt)
-                    st.session_state["draft_text"] = response.text
-                except Exception as e: st.error("⚠️ 텍스트 생성 오류! API 키를 확인해주세요.")
+        # 화면을 7(봇 조종석) : 3(꿀팁) 비율로 나눕니다.
+        col_main, col_tips = st.columns([7, 3])
         
-        if "draft_text" in st.session_state:
+        # ---------------- 좌측 영역: 봇 기능 ----------------
+        with col_main:
+            selected_account = st.selectbox("📤 어느 계정에 업로드하시겠습니까?", list(accounts.keys()))
+            selected_token = accounts[selected_account]["token"]
+
             st.divider()
-            st.subheader(f"🚀 2단계: [{selected_account}]에 스레드 업로드")
-            final_text = st.text_area("수정 후 업로드할 최종 내용:", value=st.session_state["draft_text"], height=150)
-            is_scheduled = st.checkbox("⏰ 이 게시물을 예약해서 올리기")
-            
-            if is_scheduled:
-                col1, col2 = st.columns(2)
-                with col1: sched_date = st.date_input("예약 날짜")
-                with col2: sched_time = st.time_input("예약 시간", step=60)
-                sched_datetime_str = f"{sched_date} {sched_time.strftime('%H:%M')}"
-                
-                if st.button("📅 지정한 시간에 예약하기", type="primary"):
-                    schedules = load_schedules()
-                    schedules.append({
-                        "user": current_user, "account_name": selected_account, "text": final_text,
-                        "token": selected_token, "post_time": sched_datetime_str
-                    })
-                    schedules = sorted(schedules, key=lambda x: x["post_time"])
-                    save_schedules(schedules)
-                    st.success(f"🎉 [{selected_account}] 계정에 {sched_datetime_str} 업로드 예약 완료!")
-                    del st.session_state["draft_text"]
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                if st.button("📤 지금 바로 업로드하기", type="primary"):
-                    with st.spinner("스레드에 게시물을 전송하고 있습니다..."):
-                        success, message = post_to_threads(final_text, selected_token)
-                        if success:
-                            st.balloons()
-                            st.success(f"🎉 [{selected_account}] 계정에 성공적으로 업로드되었습니다!")
-                            del st.session_state["draft_text"]
-                            time.sleep(1)
-                            st.rerun()
-                        else: st.error(f"⚠️ 업로드 실패: {message}")
+            st.subheader("📝 1단계: 게시글 자동 작성")
+            genai.configure(api_key=user_config["gemini_api_key"])
+            model = genai.GenerativeModel('gemini-2.5-flash') 
+            topic = st.text_input("💡 오늘 스레드에 올릴 주제를 짧게 적어주세요:", value="오늘 점심 메뉴 추천 좀")
 
-        st.divider()
-        col_title, col_refresh = st.columns([3, 1])
-        with col_title:
-            st.subheader("📅 내 예약된 게시물 관리")
-        with col_refresh:
-            if st.button("🔄 예약 상태 새로고침"):
-                st.rerun()
-        
-        my_schedules = [s for s in load_schedules() if s["user"] == current_user]
-        if not my_schedules:
-            st.info("현재 대기 중인 예약 게시물이 없습니다.")
-        else:
-            for idx, sched in enumerate(my_schedules):
-                disp_acc = sched.get('account_name', '기본 계정')
-                title = f"❌ [업로드 실패] {sched['post_time']} | 📌 [{disp_acc}]" if sched.get("status") == "failed" else f"⏰ {sched['post_time']} | 📌 [{disp_acc}] | (클릭해서 수정/삭제)"
-                
-                with st.expander(title):
-                    if sched.get("status") == "failed":
-                        st.error(f"⚠️ 에러 원인: {sched.get('error_msg')}")
-                        st.info("💡 시간을 미래로 다시 변경하고 [수정 내용 저장]을 누르면 재시도합니다.")
-
-                    new_text = st.text_area("내용 수정:", value=sched['text'], height=100, key=f"text_{idx}")
+            if st.button("✨ 게시글 초안 생성하기", type="primary"):
+                with st.spinner("Gemini가 트렌디한 글을 작성하고 있습니다..."):
                     try:
-                        exist_dt = datetime.strptime(sched['post_time'], "%Y-%m-%d %H:%M")
-                        exist_date = exist_dt.date()
-                        exist_time = exist_dt.time()
-                    except:
-                        exist_date = datetime.now().date()
-                        exist_time = datetime.now().time()
-                    
+                        final_prompt = f"당신은 스레드(Threads)에서 활동하는 센스 있는 인플루언서입니다. 다음 [주제]를 바탕으로 스레드에 업로드할 게시글을 작성해주세요.\n[주제]: {topic}\n[절대 지켜야 할 조건]\n1. 인사말이나 부연 설명은 절대 하지 말고 '딱 게시글 본문만' 출력할 것.\n2. 무조건 3줄 이내로 아주 짧고 간결하게 작성할 것.\n3. 친근하고 자연스러운 인터넷 '반말(최신 밈 활용)'로 작성할 것.\n4. 해시태그는 마지막 줄에 1~2개만 넣을 것."
+                        response = model.generate_content(final_prompt)
+                        st.session_state["draft_text"] = response.text
+                    except Exception as e: st.error("⚠️ 텍스트 생성 오류! API 키를 확인해주세요.")
+            
+            if "draft_text" in st.session_state:
+                st.divider()
+                st.subheader(f"🚀 2단계: [{selected_account}]에 스레드 업로드")
+                final_text = st.text_area("수정 후 업로드할 최종 내용:", value=st.session_state["draft_text"], height=150)
+                is_scheduled = st.checkbox("⏰ 이 게시물을 예약해서 올리기")
+                
+                if is_scheduled:
                     col1, col2 = st.columns(2)
-                    with col1: new_date = st.date_input("날짜 변경", value=exist_date, key=f"date_{idx}")
-                    with col2: new_time = st.time_input("시간 변경", value=exist_time, key=f"time_{idx}", step=60)
-                    new_datetime_str = f"{new_date} {new_time.strftime('%H:%M')}"
+                    with col1: sched_date = st.date_input("예약 날짜")
+                    with col2: sched_time = st.time_input("예약 시간", step=60)
+                    sched_datetime_str = f"{sched_date} {sched_time.strftime('%H:%M')}"
                     
-                    col_btn1, col_btn2 = st.columns(2)
-                    with col_btn1:
-                        if st.button("💾 수정 내용 저장", key=f"edit_{idx}", type="primary"):
-                            all_schedules = load_schedules()
-                            for s in all_schedules:
-                                if s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"]:
-                                    s["text"] = new_text; s["post_time"] = new_datetime_str
-                                    s.pop("status", None); s.pop("error_msg", None)
-                                    break
-                            save_schedules(sorted(all_schedules, key=lambda x: x["post_time"]))
-                            st.success("✅ 예약이 수정되었습니다! 다시 업로드 대기 상태로 변경됩니다.")
-                            time.sleep(1)
-                            st.rerun()
-                    with col_btn2:
-                        if st.button("🗑️ 예약 취소 (삭제)", key=f"del_{idx}"):
-                            all_schedules = load_schedules()
-                            all_schedules = [s for s in all_schedules if not (s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"])]
-                            save_schedules(all_schedules)
-                            st.warning("🗑️ 예약이 삭제되었습니다.")
-                            time.sleep(1)
-                            st.rerun()
+                    if st.button("📅 지정한 시간에 예약하기", type="primary"):
+                        schedules = load_schedules()
+                        schedules.append({
+                            "user": current_user, "account_name": selected_account, "text": final_text,
+                            "token": selected_token, "post_time": sched_datetime_str
+                        })
+                        schedules = sorted(schedules, key=lambda x: x["post_time"])
+                        save_schedules(schedules)
+                        st.success(f"🎉 [{selected_account}] 계정에 {sched_datetime_str} 업로드 예약 완료!")
+                        del st.session_state["draft_text"]
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    if st.button("📤 지금 바로 업로드하기", type="primary"):
+                        with st.spinner("스레드에 게시물을 전송하고 있습니다..."):
+                            success, message = post_to_threads(final_text, selected_token)
+                            if success:
+                                st.balloons()
+                                st.success(f"🎉 [{selected_account}] 계정에 성공적으로 업로드되었습니다!")
+                                del st.session_state["draft_text"]
+                                time.sleep(1)
+                                st.rerun()
+                            else: st.error(f"⚠️ 업로드 실패: {message}")
+
+            st.divider()
+            col_title, col_refresh = st.columns([3, 1])
+            with col_title:
+                st.subheader("📅 내 예약된 게시물 관리")
+            with col_refresh:
+                if st.button("🔄 예약 상태 새로고침"):
+                    st.rerun()
+            
+            my_schedules = [s for s in load_schedules() if s["user"] == current_user]
+            if not my_schedules:
+                st.info("현재 대기 중인 예약 게시물이 없습니다.")
+            else:
+                for idx, sched in enumerate(my_schedules):
+                    disp_acc = sched.get('account_name', '기본 계정')
+                    title = f"❌ [업로드 실패] {sched['post_time']} | 📌 [{disp_acc}]" if sched.get("status") == "failed" else f"⏰ {sched['post_time']} | 📌 [{disp_acc}] | (클릭해서 수정/삭제)"
+                    
+                    with st.expander(title):
+                        if sched.get("status") == "failed":
+                            st.error(f"⚠️ 에러 원인: {sched.get('error_msg')}")
+                            st.info("💡 시간을 미래로 다시 변경하고 [수정 내용 저장]을 누르면 재시도합니다.")
+
+                        new_text = st.text_area("내용 수정:", value=sched['text'], height=100, key=f"text_{idx}")
+                        try:
+                            exist_dt = datetime.strptime(sched['post_time'], "%Y-%m-%d %H:%M")
+                            exist_date = exist_dt.date()
+                            exist_time = exist_dt.time()
+                        except:
+                            exist_date = datetime.now().date()
+                            exist_time = datetime.now().time()
+                        
+                        col_date, col_time = st.columns(2)
+                        with col_date: new_date = st.date_input("날짜 변경", value=exist_date, key=f"date_{idx}")
+                        with col_time: new_time = st.time_input("시간 변경", value=exist_time, key=f"time_{idx}", step=60)
+                        new_datetime_str = f"{new_date} {new_time.strftime('%H:%M')}"
+                        
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                            if st.button("💾 수정 내용 저장", key=f"edit_{idx}", type="primary"):
+                                all_schedules = load_schedules()
+                                for s in all_schedules:
+                                    if s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"]:
+                                        s["text"] = new_text; s["post_time"] = new_datetime_str
+                                        s.pop("status", None); s.pop("error_msg", None)
+                                        break
+                                save_schedules(sorted(all_schedules, key=lambda x: x["post_time"]))
+                                st.success("✅ 예약 수정 완료!")
+                                time.sleep(1)
+                                st.rerun()
+                        with col_btn2:
+                            if st.button("🗑️ 예약 취소 (삭제)", key=f"del_{idx}"):
+                                all_schedules = load_schedules()
+                                all_schedules = [s for s in all_schedules if not (s["user"] == current_user and s["post_time"] == sched["post_time"] and s["text"] == sched["text"])]
+                                save_schedules(all_schedules)
+                                st.warning("🗑️ 예약이 삭제되었습니다.")
+                                time.sleep(1)
+                                st.rerun()
+
+        # ---------------- 우측 영역: 사진 내용 정리 ----------------
+        with col_tips:
+            st.subheader("💡 수익화 타임어택 전략")
+            
+            with st.expander("📌 1. 시간대별 업로드 추천 아이템", expanded=True):
+                st.markdown("""
+                * **아침**: 색조 화장품
+                * **점심**: 사무 용품, 청소 용품
+                * **식후/오후**: 영양제, 생필품, 간식
+                * **저녁 식후**: 장난감, 주방 용품
+                * **취침 전**: 기초 화장품 (스킨/로션/클렌저)
+                ---
+                * **평일**: 사무 용품
+                * **주말**: 장난감
+                * **시즌/시기별**: 여름, 겨울, 크리스마스, 명절 등
+                """)
+
+            with st.expander("🔄 2. 게시글 재사용 주기", expanded=True):
+                st.markdown("""
+                *(공식이 아닌 대략적인 수치입니다)*
+                * **스하리글**: 1일 1회 이상
+                * **일상글**: 7일 1회 이상
+                * **수익화(틱톡라이트)**: 1일 1회 이상
+                * **수익화(뉴스픽)**: 7일 1회 이상
+                * **수익화(쿠팡)**: 3일 1회 이상
+                """)
+                
+            with st.expander("📚 3. 업로드 아이템 공부법", expanded=True):
+                st.markdown("""
+                네이버에 **'홈쇼핑 모아'** 또는 **'홈쇼핑 모아 편성표'**를 검색해서, 시간대별로 사람들이 어떤 물건을 많이 사고 방송하는지 참고하여 글감 아이디어를 얻어보세요!
+                """)
