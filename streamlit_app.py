@@ -8,7 +8,7 @@ import threading
 import time
 
 SAVE_FILE = "secrets.json"
-SCHEDULE_FILE = "scheduled.json" # 예약 데이터를 저장할 새로운 파일
+SCHEDULE_FILE = "scheduled.json"
 
 # ---------------------------------------------
 # 💾 데이터 처리 및 스레드 업로드 함수
@@ -50,7 +50,7 @@ def post_to_threads(text, access_token):
     return True, "성공"
 
 # ---------------------------------------------
-# ⏰ 백그라운드 스케줄러 (시간 되면 알아서 올림)
+# ⏰ 백그라운드 스케줄러 (예약 업로드)
 # ---------------------------------------------
 def job_checker():
     while True:
@@ -59,28 +59,21 @@ def job_checker():
             now = datetime.now().strftime("%Y-%m-%d %H:%M")
             pending = []
             for item in schedules:
-                # 예약 시간이 현재 시간보다 과거이거나 같으면 업로드 실행
                 if item["post_time"] <= now:
                     post_to_threads(item["text"], item["token"])
-                    # 업로드 후 목록에서 제외됨
                 else:
                     pending.append(item)
-            
-            # 변경사항이 있으면 파일 다시 저장
             if len(schedules) != len(pending):
                 save_schedules(pending)
-        
-        time.sleep(30) # 30초마다 파일 확인
+        time.sleep(30)
 
-# 앱 실행 시 스케줄러를 백그라운드에서 한 번만 켬
 if "scheduler_started" not in st.session_state:
     t = threading.Thread(target=job_checker, daemon=True)
     t.start()
     st.session_state["scheduler_started"] = True
 
-
 # ---------------------------------------------
-# 🔒 로그인 화면 처리
+# 🔒 로그인 및 회원가입 화면
 # ---------------------------------------------
 if "logged_in_user" not in st.session_state:
     st.session_state["logged_in_user"] = None
@@ -121,7 +114,6 @@ if st.session_state["logged_in_user"] is None:
                 st.success(f"🎉 '{new_id}' 생성 완료! 로그인 탭에서 로그인해주세요.")
     st.stop()
 
-
 # ---------------------------------------------
 # 🚀 메인 대시보드 화면
 # ---------------------------------------------
@@ -139,25 +131,29 @@ st.title("🤖 스레드 자동화 봇 대시보드")
 if not user_config.get("gemini_api_key") or not user_config.get("threads_token"):
     st.warning("⚠️ 현재 계정의 API 설정 정보가 없습니다. 왼쪽 [1_settings] 메뉴에서 내 설정을 완료해주세요.")
 else:
-    # 1단계: 텍스트 생성
+    # 1단계: 텍스트 생성 (숨겨진 프롬프트 적용)
     st.subheader("📝 1단계: 게시글 자동 작성")
     genai.configure(api_key=user_config["gemini_api_key"])
     model = genai.GenerativeModel('gemini-2.5-flash') 
     
-    sample_prompt = sample_prompt = """요즘 스레드나 인스타그램, 인터넷 등에서 사람들이 많이 이야기하는 최신 트렌드나 밈, 공감 가는 일상 주제를 하나 골라서 스레드 게시글을 작성해줘. 
-    
-[조건]
-1. 무조건 3줄 이내로 아주 짧고 간결하게 작성할 것.
-2. 친구한테 말하듯이 친근하고 자연스러운 '반말'로 작성할 것.
-3. 해시태그는 마지막 줄에 1~2개만 넣을 것."""
-    
-    user_prompt = st.text_area("Gemini에게 지시할 내용을 적어보세요:", value=sample_prompt, height=150)
-    user_prompt = st.text_area("Gemini에게 지시할 내용을 적어보세요:", value=sample_prompt, height=100)
+    topic = st.text_input("💡 오늘 스레드에 올릴 주제를 짧게 적어주세요:", value="오늘 점심 메뉴 추천 좀")
 
     if st.button("✨ 게시글 초안 생성하기", type="primary"):
-        with st.spinner("Gemini가 글을 작성하고 있습니다..."):
+        with st.spinner("Gemini가 트렌디한 글을 작성하고 있습니다..."):
             try:
-                response = model.generate_content(user_prompt)
+                final_prompt = f"""
+당신은 스레드(Threads)에서 활동하는 센스 있는 인플루언서입니다. 
+다음 [주제]를 바탕으로 스레드에 업로드할 게시글을 작성해주세요.
+
+[주제]: {topic}
+
+[절대 지켜야 할 조건]
+1. 네, 알겠습니다 같은 인사말이나 부연 설명은 절대 하지 말고 '딱 게시글 본문만' 출력할 것.
+2. 무조건 3줄 이내로 아주 짧고 간결하게 작성할 것.
+3. 친구한테 말하듯이 친근하고 자연스러운 인터넷 '반말(최신 밈 활용)'로 작성할 것.
+4. 해시태그는 마지막 줄에 1~2개만 넣을 것.
+"""
+                response = model.generate_content(final_prompt)
                 st.session_state["draft_text"] = response.text
             except Exception as e:
                 st.error("⚠️ 텍스트 생성 오류! API 키를 확인해주세요.")
@@ -166,9 +162,8 @@ else:
     if "draft_text" in st.session_state:
         st.divider()
         st.subheader("🚀 2단계: 스레드 업로드")
-        final_text = st.text_area("수정 후 업로드할 최종 내용:", value=st.session_state["draft_text"], height=200)
+        final_text = st.text_area("수정 후 업로드할 최종 내용:", value=st.session_state["draft_text"], height=150)
         
-        # --- 예약 업로드 기능 추가 ---
         is_scheduled = st.checkbox("⏰ 이 게시물을 예약해서 올리기")
         
         if is_scheduled:
@@ -188,7 +183,6 @@ else:
                     "token": user_config["threads_token"],
                     "post_time": sched_datetime_str
                 })
-                # 시간순으로 정렬해서 저장
                 schedules = sorted(schedules, key=lambda x: x["post_time"])
                 save_schedules(schedules)
                 
@@ -207,7 +201,7 @@ else:
                     else:
                         st.error(f"⚠️ 업로드 실패: {message}")
 
-    # --- 예약 목록 보기 기능 추가 ---
+    # --- 예약 목록 보기 ---
     st.divider()
     st.subheader("📅 내 예약된 게시물 목록")
     
