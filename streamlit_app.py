@@ -101,11 +101,10 @@ def process_due_schedules():
 process_due_schedules()
 
 # ---------------------------------------------
-# 🔒 로그인 및 메인 화면 구성 (세션 유지 패치)
+# 🔒 로그인 및 메인 화면 구성
 # ---------------------------------------------
 users_data = load_all_users()
 
-# 💡 URL 파라미터를 읽어서 자동 로그인 처리!
 if "logged_in_user" not in st.session_state:
     st.session_state["logged_in_user"] = None
     if "auto_login" in st.query_params:
@@ -125,7 +124,6 @@ if st.session_state["logged_in_user"] is None:
                 stored_pw = users_data[login_id].get("password", "")
                 if stored_pw == "" or stored_pw == login_pw:
                     st.session_state["logged_in_user"] = login_id
-                    # 💡 로그인 성공 시 주소창에 내 아이디를 박제해서 새로고침 방어!
                     st.query_params["auto_login"] = login_id
                     st.rerun()
                 else: st.error("⚠️ 비밀번호가 틀렸습니다.")
@@ -156,7 +154,6 @@ with st.sidebar:
     st.success(f"👤 **{current_user}**님 접속 중")
     st.info(f"⏰ 봇 기준 현재 시간:\n\n**{bot_now_str}**")
     
-    # 💡 로그아웃 시 주소창도 깔끔하게 비워주기
     if st.button("🚪 로그아웃"):
         st.session_state["logged_in_user"] = None
         if "auto_login" in st.query_params:
@@ -258,6 +255,28 @@ with tab_settings:
                 time.sleep(1)
                 st.rerun()
 
+    # ✨ [추가된 부분] 비밀번호 변경 기능
+    st.divider()
+    st.header("3. 비밀번호 변경")
+    with st.form("change_password_form"):
+        current_pw = st.text_input("현재 비밀번호", type="password")
+        new_pw = st.text_input("새 비밀번호", type="password")
+        confirm_pw = st.text_input("새 비밀번호 확인", type="password")
+        
+        if st.form_submit_button("비밀번호 변경"):
+            if users_data[current_user].get("password", "") != current_pw:
+                st.error("⚠️ 현재 비밀번호가 일치하지 않습니다.")
+            elif new_pw != confirm_pw:
+                st.error("⚠️ 새 비밀번호가 서로 다릅니다.")
+            elif not new_pw:
+                st.error("⚠️ 새 비밀번호를 입력해주세요.")
+            else:
+                users_data[current_user]["password"] = new_pw
+                save_all_users(users_data)
+                st.success("✅ 비밀번호가 성공적으로 변경되었습니다!")
+                time.sleep(1)
+                st.rerun()
+
 # ==========================================
 # 🚀 탭 1: 대시보드 (메인 화면 넓게 사용)
 # ==========================================
@@ -266,10 +285,8 @@ with tab_main:
     if not user_config.get("gemini_api_key") or not accounts:
         st.warning("⚠️ 옆의 [⚙️ 계정 및 API 설정] 탭으로 가서 Gemini 키와 스레드 계정을 먼저 등록해주세요.")
     else:
-        # 화면을 7(봇 조종석) : 3(꿀팁) 비율로 나눕니다.
         col_main, col_tips = st.columns([7, 3])
         
-        # ---------------- 좌측 영역: 봇 기능 ----------------
         with col_main:
             selected_account = st.selectbox("📤 어느 계정에 업로드하시겠습니까?", list(accounts.keys()))
             selected_token = accounts[selected_account]["token"]
@@ -381,6 +398,5 @@ with tab_main:
                                 time.sleep(1)
                                 st.rerun()
 
-        # ---------------- 우측 영역 비우기 (디자인 밸런스 용) ----------------
         with col_tips:
-            st.empty() # 왼쪽으로 옮겼기 때문에 오른쪽은 비워둡니다
+            st.empty()
