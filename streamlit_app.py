@@ -10,7 +10,7 @@ SAVE_FILE = "secrets.json"
 SCHEDULE_FILE = "scheduled.json"
 
 # ---------------------------------------------
-# 💾 데이터 처리 및 스레드 업로드 함수
+# 💾 데이터 처리 (파일 꼬임 방지용 강력한 예외 처리 추가)
 # ---------------------------------------------
 def save_all_users(data):
     with open(SAVE_FILE, 'w', encoding='utf-8') as f:
@@ -18,24 +18,29 @@ def save_all_users(data):
 
 def load_all_users():
     if os.path.exists(SAVE_FILE):
-        with open(SAVE_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            changed = False
-            for uid, udata in data.items():
-                if "threads_accounts" not in udata:
-                    udata["threads_accounts"] = {}
-                    if udata.get("threads_token"):
-                        udata["threads_accounts"]["기본 계정"] = {"secret": udata.get("threads_secret", ""), "token": udata.get("threads_token", "")}
-                    changed = True
-            if changed: save_all_users(data)
-            return data
+        try:
+            with open(SAVE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                changed = False
+                for uid, udata in data.items():
+                    if "threads_accounts" not in udata:
+                        udata["threads_accounts"] = {}
+                        if udata.get("threads_token"):
+                            udata["threads_accounts"]["기본 계정"] = {"secret": udata.get("threads_secret", ""), "token": udata.get("threads_token", "")}
+                        changed = True
+                if changed: save_all_users(data)
+                return data
+        except:
+            return {} # 파일이 심하게 꼬였을 경우 빈 데이터로 시작해서 에러 방지
     return {}
 
 def load_schedules():
     if os.path.exists(SCHEDULE_FILE):
         try:
-            with open(SCHEDULE_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-        except: return []
+            with open(SCHEDULE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return [] # 예약 파일이 꼬였으면 깔끔하게 비우고 새로 시작
     return []
 
 def save_schedules(data):
@@ -49,7 +54,7 @@ def post_to_threads(text, access_token):
         return False, f"컨테이너 생성 오류: {create_res.text}"
     
     creation_id = create_res.json().get("id")
-    time.sleep(3) # 💡 메타 서버가 준비할 수 있게 3초 대기
+    time.sleep(3) # 메타 서버 3초 대기
     
     publish_url = "https://graph.threads.net/v1.0/me/threads_publish"
     publish_res = requests.post(publish_url, data={"creation_id": creation_id, "access_token": access_token})
@@ -64,7 +69,7 @@ def get_long_lived_token(short_token, client_secret):
     return (True, res.json().get("access_token")) if res.status_code == 200 else (False, res.text)
 
 # ---------------------------------------------
-# ⏰ [핵심 패치] 중복 발송을 막는 '자물쇠(Lock)' 기능 추가
+# ⏰ 중복 발송을 막는 '자물쇠(Lock)' 기능 
 # ---------------------------------------------
 def process_due_schedules():
     schedules = load_schedules()
@@ -73,22 +78,18 @@ def process_due_schedules():
     now_kst = datetime.utcnow() + timedelta(hours=9)
     now_str = now_kst.strftime("%Y-%m-%d %H:%M")
 
-    # 1. 시간이 지났으면서 아직 자물쇠가 안 걸린 애들만 모음
     due_items = [item for item in schedules if item["post_time"] <= now_str and item.get("status") not in ["failed", "processing"]]
-
     if not due_items: return
 
-    # 2. 🌟 [핵심 방어막] 찾자마자 '처리 중(processing)' 도장 쾅! (자물쇠 걸기)
-    # 이렇게 해야 클릭을 연타해도 메타 서버에 중복으로 안 날아갑니다.
+    # 자물쇠 걸기
     for item in due_items:
         item["status"] = "processing"
     save_schedules(schedules)
 
-    # 3. 자물쇠를 걸었으니 안심하고 하나씩 스레드에 업로드 진행
+    # 스레드 업로드 진행
     for item in due_items:
         success, msg = post_to_threads(item["text"], item["token"])
 
-        # 4. 결과 저장 (성공하면 목록에서 지우고, 실패하면 에러 기록)
         current_schedules = load_schedules()
         updated_schedules = []
         for s in current_schedules:
@@ -97,12 +98,10 @@ def process_due_schedules():
                     s["status"] = "failed"
                     s["error_msg"] = msg
                     updated_schedules.append(s)
-                # 성공 시에는 다시 리스트에 안 넣으므로 자연스레 깔끔하게 삭제됨
             else:
                 updated_schedules.append(s)
         save_schedules(updated_schedules)
 
-# 스크립트 실행 시 딱 한 번만 검사!
 process_due_schedules()
 
 # ---------------------------------------------
@@ -293,8 +292,13 @@ with tab_main:
                         st.info("💡 시간을 미래로 다시 변경하고 [수정 내용 저장]을 누르면 재시도합니다.")
 
                     new_text = st.text_area("내용 수정:", value=sched['text'], height=100, key=f"text_{idx}")
-                    try: exist_dt = datetime.strptime(sched['post_time'], "%Y-%m-%d %H:%M"); exist_date = exist_dt.date(); exist_time = exist_dt.time()
-                    except: exist_date = datetime.now().date(); exist_time = datetime.now().time()
+                    try:
+                        exist_dt = datetime.strptime(sched['post_time'], "%Y-%m-%d %H:%M")
+                        exist_date = exist_dt.date()
+                        exist_time = exist_dt.time()
+                    except:
+                        exist_date = datetime.now().date()
+                        exist_time = datetime.now().time()
                     
                     col1, col2 = st.columns(2)
                     with col1: new_date = st.date_input("날짜 변경", value=exist_date, key=f"date_{idx}")
